@@ -1,0 +1,972 @@
+---
+title: "COVID-19:  Is the curve flattening?"
+author: "John Sinues"
+output: html_notebook
+---
+
+
+```{r clearall, echo=FALSE, warning=FALSE, message=FALSE, results=FALSE}
+rm(list = ls())
+```
+
+# Introduction
+Individuals across the globe are urged to slow the spread of COVID-19.  Governments are implementing everything from mild **shelter in place** to extreme [*shoot them dead*](https://www.voanews.com/science-health/coronavirus-outbreak/philippine-president-says-those-violating-anti-virus-measures) measures to control this global crisis.
+
+All these efforts are in hopes of flattening the curve.  According to this [article]((https://www.biospace.com/article/flattening-the-curve-covid-19/)), high peaks put a lot of pressure on health care systems which they struggle to respond to.
+
+So what does this curve look like for my state of Virginia?  I've seen a rising curve for the entire United States, but I've only seen the current number of cases for a particular day.  I don't know how this number compares to last week.
+
+[World O Meter](https://www.worldometers.info/coronavirus/) and [Bing's Coronoavirus updates](https://www.bing.com/search?q=Coronavirus+updates) provide nice summaries, but neither of these web sites showed the trend of confirmed cases over time.
+
+All I needed was the data.  After countless searches, I stumbled upon the University of Virginia's [COVID-19 Surveillance Dashboard](https://nssac.bii.virginia.edu/covid-19/dashboard/).  It is a nice real-time dashboard that also allows one to download data.  Upon inspection of the provided datasets, I found what I was looking for.  
+
+This personal project is my attempt to understand the COVID-19 curve and how the number of cases affects the shape of the curve.
+
+### Let's get started.
+
+```{r get_files, echo=FALSE, warning=FALSE, message=FALSE, results=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggthemes)
+library(knitr)
+library(kableExtra)
+
+options(scipen=10000) # remove scientific notation from graphs
+
+filename <- "nssac-ncov-data-country-state"
+src_file <- paste0("https://nssac.bii.virginia.edu/covid-19/dashboard/data/"
+                   , filename
+                   , ".zip")
+
+# Make a temporary file (tf) and a temporary folder (tdir)
+tf <- tempfile(tmpdir = tdir <- tempdir())
+
+## Download the zip file 
+download.file(src_file, tf)
+
+## Unzip it in the temp folder
+csv_files <- unzip(tf, exdir = tdir)
+
+files_to_import <- list.files(paste0(tdir,"/", filename), pattern = ".csv", full.names = TRUE)
+
+
+# apply map_df() to iterate read_csv over files
+data <- files_to_import %>% map_dfr(read_csv, col_types = "ccciii")
+colnames(data) <- c("Name", "Region", "Last_Update", "Confirmed", "Deaths", "Recovered")
+data$Last_Update <- ymd_hms(data$Last_Update)
+
+```
+
+```{r, echo = FALSE, results = 'asis'}
+showTable <- function(theData, tableCaption, theFootnote=NULL) {
+  if (missing(tableCaption)) {
+    theCaption <- "Current Number of Infections"
+  } else {
+    theCaption <- tableCaption
+  }
+  kable(theData, caption = theCaption) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+    scroll_box(height = "500px") %>%
+    footnote(general = theFootnote)
+    
+}
+
+```
+
+
+```{r, echo = FALSE, results = 'asis'}
+set.seed(757)
+
+showTable(sample_n(data, 10), "Sample Data From Imported Files")
+
+```
+
+```{r data_prep, echo=FALSE, warning=FALSE, message=FALSE, results=FALSE}
+# calculate case  type change from previous day
+data <- data %>% group_by(Name, Region) %>%
+  arrange(Region, Name, Last_Update) %>%
+  mutate(delta_confirmed = Confirmed - lag(Confirmed)) %>%
+  mutate(delta_deaths = Deaths - lag(Deaths)) %>%
+  mutate(delta_recovered = Recovered - lag(Recovered))
+
+# shorten name
+data$Name[data$Name == "United States Virgin Islands"] <- "US Virgin Islands"
+
+min_dt <- min(data$Last_Update, na.rm=TRUE)
+max_dt <- max(data$Last_Update, na.rm=TRUE)
+
+```
+\  
+\  
+\  
+
+After loading the datafile, we find the dataset contains **`r nrow(data)`** records, **`r length(unique(data$Region))`** areas of interests with information dated from **`r min_dt[[1]]`** and **`r max_dt[[1]]`**.
+
+Globally, there are **`r sum(data %>%  slice(c(1:n())-1) %>% ungroup() %>% select(delta_confirmed), na.rm=TRUE)`** confirmed COVID-19 cases, **`r sum(data %>%  slice(c(1:n())-1) %>% ungroup() %>% select(delta_deaths), na.rm=TRUE)`** deaths, and **`r sum(data %>%  slice(c(1:n())-1) %>% ungroup() %>% select(delta_recovered), na.rm=TRUE)`** who recovered.
+
+
+```{r us_data, echo = FALSE, warning=FALSE, message=FALSE}
+df.us <- data %>% 
+  filter(Region == "USA") %>% 
+  select(Name, Last_Update, Confirmed, Deaths, Recovered) %>%
+  gather(case_type, value, Confirmed:Recovered)
+
+```
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE, fig.align='center', fig.width=10, fig.height=8}
+plotRegions <- function(theData, plotLog, reportTitle, facetWrap) {
+  p <- ggplot(theData,
+              aes(x=Last_Update, y=value, color = factor(Name))) + 
+    geom_point(aes(color = case_type)) +
+    labs(title = reportTitle
+         , x = "Date Reported"
+         , y = "# Cases"
+         , color = "Case Type"
+         , caption = paste0("Created ", Sys.time())) +
+    scale_color_fivethirtyeight() + 
+    theme_fivethirtyeight() +
+    theme(axis.text.x = element_text(angle=90))
+
+  if (facetWrap == "Y") {
+    p <- p + facet_wrap(vars(Name))
+  }
+  
+  if (grepl(pattern="^log[0-9]{1,2}$", plotLog)) {
+    p <- p + scale_y_continuous(trans=plotLog)
+  }
+
+  p  
+}
+
+```
+
+
+
+```{r, echo = FALSE}
+Northeast <- c("Connecticut", "Maine", "Massachusetts", "New Hampshire", "Rhode Island"
+               , "Vermont", "New Jersey", "New York", "Pennsylvania", "Puerto Rico"
+               , "US Virgin Islands")
+Midwest <- c("Illinois", "Indiana", "Michigan", "Ohio", "Wisconsin"
+             , "Iowa", "Kansas", "Minnesota", "Missouri", "Nebraska"
+             , "North Dakota", "South Dakota")
+South <- c("Delaware", "Florida", "Georgia", "Maryland", "North Carolina"
+           , "South Carolina", "Virginia", "District of Columbia", "West Virginia", "Alabama"
+           , "Kentucky", "Mississippi", "Tennessee", "Arkansas", "Louisiana"
+           , "Oklahoma", "Texas")
+West <- c("Arizona", "Colorado", "Idaho", "Montana", "Nevada"
+          , "New Mexico", "Utah", "Wyoming", "Alaska", "California"
+          , "Hawaii", "Oregon", "Washington", "Northern Mariana Islands", "Guam")
+
+```
+
+***
+
+\  
+\  
+
+#### What does the curve look like for the US as a whole?  This is the graphic we see in mainstream media.  Currently there are `r sum((data %>% filter(Name %in% c(Northeast, Midwest, South, West)))[7], na.rm = TRUE)` confirmed cases in the United States.
+
+```{r, echo = FALSE, warning=FALSE, fig.align='center', fig.width=10, fig.height=8}
+plotRegions(df.us %>%
+              filter(Name %in% c(Midwest, South, West, Northeast)) %>% 
+              ungroup() %>%
+              select(Last_Update, case_type,value) %>%
+              group_by(Last_Update, case_type) %>%
+              summarise(value=sum(value, na.rm = TRUE))
+            , "N", "COVID-19 Cases - Entire US Region", "N")
+
+```
+\  
+\  
+\  
+\ 
+\  
+\ 
+
+#### Seeing the big picture can be overwhelming.  Let's break it down by regions.
+
+```{r, echo = FALSE, fig.align='center', fig.width=10, fig.height=8}
+plotRegions(df.us %>% filter(Name %in% Northeast), "N", "COVID-19 Cases - Northest Region", "Y")
+plotRegions(df.us %>% filter(Name %in% Midwest), "N", "COVID-19 Cases - Midwest Region", "Y")
+plotRegions(df.us %>% filter(Name %in% South), "N", "COVID-19 Cases - South Region", "Y")
+plotRegions(df.us %>% filter(Name %in% West), "N", "COVID-19 Cases - West Region", "Y")
+
+```
+\  
+\  
+\  
+\ 
+\  
+\ 
+
+##### Fast rising curves identify those *hot spots* and priority regions.  But what about those states that don't show a steep rising curve?  Are they of concern?
+
+##### The above graphs group states by regions.  One state with a high number of cases could skew the graph for the region.  To take this into account and to show the rate of change over time, let's plot the information on a logarithmic scale.
+
+> Graphs with steep curves show states hit hardest by the COVID-19 virus.
+
+```{r, echo = FALSE, warning=FALSE}
+createLabel <- function(countryName, logBase, caseType=NULL) {
+  if (missing(caseType)) {
+    label <- paste0("COVID-19 Cases - ", countryName)
+  } else {
+    label <- paste0("COVID-19 ", caseType, " - ", countryName)
+  }
+
+  # only base logs of 2 and 10 are supported; not sure how to
+  # take the Log[n] w/in the bquote() function
+  if (missing(logBase)) {
+    # no log label
+    bquote(.(label[1]))
+  } else if (logBase == "log2") {
+    bquote(.(label[1]) ~ (Log[2]))
+  } else if (logBase == "log10") {
+    bquote(.(label[1]) ~ (Log[10]))
+  } else if (grepl(pattern="^log[0-9]{1,2}$", logBase)) {
+    bquote(.(label[1]) ~ (Log))
+  }
+}
+
+```
+
+```{r, echo = FALSE, warning=FALSE, fig.align='center', fig.width=10, fig.height=8}
+plotRegions(df.us %>% filter(Name %in% Northeast), "log10", createLabel("Northest Region"), "Y")
+plotRegions(df.us %>% filter(Name %in% Midwest), "log10",  createLabel("Midwest Region"), "Y")
+plotRegions(df.us %>% filter(Name %in% South), "log10",  createLabel("South Region"), "Y")
+plotRegions(df.us %>% filter(Name %in% West), "log10",  createLabel("West Region"), "Y")
+
+```
+\  
+\  
+\  
+\ 
+\  
+\ 
+
+##### What does the Virginia curve show?
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.align='center', fig.width=10, fig.height=8}
+df.temp <- df.us %>% filter(Name == "Virginia")
+
+plotRegions(df.temp, "N", createLabel("Virginia"), "N")
+plotRegions(df.temp, "log10", createLabel("Virginia", "log10"), "N")
+
+```
+***
+\  
+\  
+\  
+\ 
+\  
+\ 
+
+#### Summary of U.S. Areas of Interest
+
+```{r tab_us_regions, echo = FALSE, warning=FALSE, message=FALSE}
+get_us_region <- function(theData, region, caseType, label) {
+  theData %>% 
+    filter(Name %in% c(region) & case_type %in% caseType) %>%
+    group_by(Name, case_type) %>%
+    arrange(Last_Update) %>%
+    slice(c(n())) %>%
+    mutate(group = label) %>%
+    ungroup() %>%
+    select(Name, group, case_type, value)
+}
+
+df.temp <- get_us_region(df.us, Midwest, c('Confirmed', 'Deaths', 'Recovered'), 'Midwest')
+df.temp <- bind_rows(df.temp, get_us_region(df.us, South, c('Confirmed', 'Deaths', 'Recovered'), 'South'))
+df.temp <- bind_rows(df.temp, get_us_region(df.us, West, c('Confirmed', 'Deaths', 'Recovered'), 'West'))
+df.temp <- bind_rows(df.temp, get_us_region(df.us, Northeast, c('Confirmed', 'Deaths', 'Recovered'), 'Northeast'))
+df.temp <- df.temp %>% 
+  spread(case_type, value) %>%
+  arrange(group, -Confirmed)
+
+get_region_count <- function(thedata, thegroup) {
+  nrow(thedata %>% filter(group %in% thegroup))
+}
+
+
+kable(df.temp
+      , caption = "Summary of US Areas of Interest") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  pack_rows("Midwest"
+            , 1
+            , get_region_count(df.temp, c("Midwest"))) %>%
+  pack_rows("Northeast"
+            , get_region_count(df.temp, c("Midwest")) + 1
+            , get_region_count(df.temp, c("Midwest", "Northeast"))) %>%
+  pack_rows("South"
+            , get_region_count(df.temp, c("Midwest", "Northeast")) + 1
+            , get_region_count(df.temp, c("Midwest", "Northeast", "South"))) %>%
+  pack_rows("West"
+            , get_region_count(df.temp, c("Midwest", "Northeast", "South")) + 1
+            , get_region_count(df.temp, c("Midwest", "Northeast", "South", "West"))) %>%
+  scroll_box(height = "400px") %>%
+  footnote(general = "There appears to be a discrepancy to how recoveries are recorded by state.  Based upon Bing's COVID-19 stats, some of the recoveries are correct whereas others are not.")
+
+```
+***
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+showTable(df.us %>%
+            filter(case_type == "Confirmed" & Name %in% c(Midwest, South, West, Northeast)) %>%
+            group_by(Region, Name) %>%
+            arrange(Region, Name, Last_Update) %>%
+            slice(c(n())) %>%
+            ungroup() %>%
+            select(Name, value) %>%
+            arrange(-value) %>%
+            top_n(10) %>%
+            rename(c('# Confirmed Cases' = 'value'))
+          , "States With Most Confirmed Cases")
+
+showTable(data %>%
+            filter(Name %in% c(Midwest, South, West, Northeast)) %>%
+            group_by(Region, Name) %>%
+            arrange(Region, Name, Last_Update) %>%
+            slice(c(n()-1)) %>%
+            ungroup() %>%
+            select(Name, delta_confirmed) %>%
+            arrange(-delta_confirmed) %>%
+            top_n(10) %>%
+            rename(c('Change In Number of Confirmed Cases From Yesterday' = 'delta_confirmed'))
+          , "States With The Largest Daily Change of Confirmed Cases")
+
+showTable(df.us %>%
+            filter(case_type == "Deaths" & Name %in% c(Midwest, South, West, Northeast)) %>%
+            group_by(Region, Name) %>%
+            arrange(Region, Name, Last_Update) %>%
+            slice(c(n())) %>%
+            ungroup() %>%
+            select(Name, value) %>%
+            arrange(-value) %>%
+            top_n(10) %>%
+            rename(c('# Deaths' = 'value'))
+          , "States With Most Deaths")
+
+showTable(df.us %>%
+            filter(case_type == "Recovered" & Name %in% c(Midwest, South, West, Northeast)) %>%
+            group_by(Region, Name) %>%
+            arrange(Region, Name, Last_Update) %>%
+            slice(c(n())) %>%
+            ungroup() %>%
+            select(Name, value) %>%
+            arrange(-value) %>%
+            top_n(10) %>%
+            rename(c('# Recoveries' = 'value'))
+          , "States With Most Recovered Cases"
+          , "Discrepancies found in how recoveries are recorded by state.")
+
+```
+***
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE, eval=FALSE, include=FALSE}
+showTable(data %>%
+            arrange(Region, Last_Update) %>%
+            ungroup() %>%
+            group_by(Region) %>%
+            summarise(delta_confirmed=sum(delta_confirmed, na.rm = TRUE)) %>%
+            select(Name, delta_confirmed) %>%
+            slice(c(n())) %>%
+            arrange(-delta_confirmed) %>%
+            top_n(50) %>%
+            rename(c('# Confirmed Cases' = 'delta_confirmed'))
+          , "Regions With Largest Number of Confirmed Cases")
+
+```
+
+\  
+\  
+\  
+\ 
+\  
+\ 
+
+***
+
+A former colleague and Old Dominion University professor, Dr. Chuck Cartledge, provided valuable feedback on my inital attempt on analyzing this information.  He also referred me to this insightful [How To Tell If We're Beating COVID-19 video](https://www.youtube.com/watch?v=54XLXg4fYsc).  
+
+Three key points were discussed 1) use a logarithmic scale, 2) focus on change, not absolute numbers, and 3) don't plot against time.  
+
+Taking this into account, let's take a look at Virginia again.
+
+> The following graphs plot the total number of confirmed cases on the x-axis (*Confirmed* column) and the daily change of confirmed cases (*delta_confirmed* column) on the y-axis.
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE, fig.align='center'}
+plotDelta <- function(theData, reportTitle, plotLog, caseType) {
+  
+  if (caseType == "Recovered") {
+    p <- ggplot(theData,
+                aes(Recovered, delta_recovered))
+  } else if (caseType == "Deaths") {
+    p <- ggplot(theData,
+                aes(Deaths, delta_deaths))
+  } else {
+    p <- ggplot(theData,
+                aes(Confirmed, delta_confirmed))
+  }
+
+  p <- p +
+    geom_point() +
+    stat_smooth() +
+    labs(title = reportTitle
+         , x = paste0("Total Number Of ", caseType)
+         , y = paste0("Previous Days Total Number Of ", caseType)
+         , caption = paste0("Created ", Sys.time())) +
+    scale_color_fivethirtyeight() + 
+    theme_fivethirtyeight()
+
+  if (grepl(pattern="^log[0-9]{1,2}$", plotLog)) {
+    p <- p + scale_y_continuous(trans=plotLog)
+  }
+  
+  p
+}
+
+```
+
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+df.temp <- data %>% 
+  filter(Region == "USA" & Name == "Virginia") %>% 
+  group_by(Name) %>%
+  select(Name, Last_Update, Confirmed, Deaths, Recovered
+         , delta_confirmed, delta_deaths, delta_recovered) %>%
+  arrange(Last_Update)
+
+showTable(df.temp,"Virginia COVID-19 Data")
+
+plotDelta(df.temp
+          , createLabel(df.temp$Name
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_confirmed, na.rm = TRUE), " Confirmed Cases)"))
+          , "Y"
+          , "Confirmed")
+
+```
+\  
+\  
+\  
+\ 
+\  
+\ 
+
+> What if we plotted the number of fatalities?  The fatalities graphs plot the total number of deaths on the x-axis (*Deaths* column) and the daily change of deaths (*delta_deaths* column) on the y-axis.
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+plotDelta(df.temp
+          , createLabel(df.temp$Name
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_deaths, na.rm = TRUE), " Deaths)"))
+          , "log10"
+          , "Deaths")
+
+```
+\  
+\  
+\  
+\ 
+\  
+\ 
+
+In the video, the creator highlighted two countries exhibiting recovery curves:  South Korea and China.
+
+```{r china_south_korea_plot, echo = FALSE, warning=FALSE, message=FALSE}
+
+df.temp <- data %>% 
+  filter(Region == "South Korea") %>% 
+  group_by(Region) %>%
+  select(Name, Last_Update, Confirmed, Deaths, Recovered
+         , delta_confirmed, delta_deaths, delta_recovered) %>%
+  arrange(Last_Update)
+
+plotDelta(df.temp
+          , createLabel(df.temp$Name
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_confirmed, na.rm = TRUE), " Confirmed Cases)"))
+          , "Y"
+          , "Confirmed")
+plotDelta(df.temp
+          , createLabel(df.temp$Name
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_deaths, na.rm = TRUE), " Deaths)"))
+          , "log10"
+          , "Deaths")
+
+
+df.temp <- data %>% 
+  filter(Region == "Mainland China") %>% 
+  group_by(Region) %>%
+  select(Name, Last_Update, Confirmed, Deaths, Recovered
+         , delta_confirmed, delta_deaths, delta_recovered) %>%
+  arrange(Last_Update)
+
+plotDelta(df.temp
+          , createLabel("Mainland China"
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_confirmed, na.rm = TRUE), " Confirmed Cases)"))
+          , "Y"
+          , "Confirmed")
+plotDelta(df.temp
+          , createLabel("Mainland China"
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_deaths, na.rm = TRUE), " Deaths)"))
+          , "log10"
+          , "Deaths")
+
+```
+\  
+\  
+\  
+\ 
+\  
+\ 
+
+The video also showed Japan having a slight uptick (5:49 of the video).  What does the data reveal?  (Note:  On 07 April 2020, Japan declares a [state of emergency](https://apnews.com/6e506c4f105670b8fa8eb5531aadf2c1).)
+
+```{r japan_plot, echo = FALSE, warning=FALSE, message=FALSE}
+df.temp <- data %>% 
+  filter(Region == "Japan") %>% 
+  group_by(Region) %>%
+  select(Name, Last_Update, Confirmed, Deaths, Recovered
+         , delta_confirmed, delta_deaths, delta_recovered) %>%
+  arrange(Last_Update)
+
+plotDelta(df.temp
+          , createLabel(df.temp$Name
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_confirmed, na.rm = TRUE), " Confirmed Cases)"))
+          , "Y"
+          , "Confirmed")
+plotDelta(df.temp
+          , createLabel(df.temp$Name
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_deaths, na.rm = TRUE), " Deaths)"))
+          , "log10"
+          , "Deaths")
+
+
+```
+\  
+\  
+\  
+\ 
+\  
+\ 
+
+How does the United States compare with these countries?
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+df.temp <- data %>% 
+  filter(Region == "USA") %>% 
+  group_by(Region) %>%
+  select(Name, Last_Update, Confirmed, Deaths, Recovered
+         , delta_confirmed, delta_deaths, delta_recovered) %>%
+  arrange(Last_Update)
+
+plotDelta(df.temp
+          , createLabel("USA"
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_confirmed, na.rm = TRUE), " Confirmed Cases)"))
+          , "Y"
+          , "Confirmed")
+plotDelta(df.temp
+          , createLabel("USA"
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_deaths, na.rm = TRUE), " Deaths)"))
+          , "log10"
+          , "Deaths")
+
+```
+\  
+\  
+\  
+\ 
+\  
+\ 
+
+Finally, today (April 5, 2020), I heard that things in Italy are starting look [favorable](https://www.cbsnews.com/live/video/20200405162054-update-on-italys-coronavirus-outbreak/).  What does the data say?
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+df.temp <- data %>% 
+  filter(Region == "Italy") %>% 
+  group_by(Region) %>%
+  select(Name, Last_Update, Confirmed, Deaths, Recovered
+         , delta_confirmed, delta_deaths, delta_recovered) %>%
+  arrange(Last_Update)
+
+plotDelta(df.temp
+          , createLabel(df.temp$Name
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_confirmed, na.rm = TRUE), " Confirmed Cases)"))
+          , "Y"
+          , "Confirmed")
+plotDelta(df.temp
+          , createLabel(df.temp$Name
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_deaths, na.rm = TRUE), " Deaths)"))
+          , "log10"
+          , "Deaths")
+plotDelta(df.temp
+          , createLabel(df.temp$Name
+                           , "log10"
+                           , paste0("(", sum(df.temp$delta_recovered, na.rm = TRUE), " Recovered)"))
+          , "log10"
+          , "Recoveries")
+
+```
+
+
+```{r plot_us_regions, echo = FALSE, warning=FALSE, message=FALSE}
+
+# save US regions to files
+
+for (val in c(Midwest, South, West, Northeast)) {
+  df.temp <- data %>% 
+    filter(Region == "USA" & Name == val) %>% 
+    group_by(Name) %>%
+    select(Name, Last_Update, Confirmed, Deaths, Recovered
+           , delta_confirmed, delta_deaths, delta_recovered) %>%
+    arrange(Last_Update)
+  
+  p <- plotDelta(df.temp
+            , createLabel(df.temp$Name
+                          , "log10"
+                          , paste0("(", sum(df.temp$delta_confirmed, na.rm = TRUE), " Confirmed Cases)"))
+            , "Y"
+            , "Confirmed")
+  ggsave(filename=paste0("./images/", df.temp$Name, "_confirmed.png"), device="png", plot=p)
+  
+  p <- plotDelta(df.temp
+            , createLabel(df.temp$Name
+                          , "log10"
+                          , paste0("(", sum(df.temp$delta_deaths, na.rm = TRUE), " Deaths)"))
+            , "log10"
+            , "Deaths")
+  ggsave(filename=paste0("./images/", df.temp$Name, "_deaths.png"), device="png", plot=p)
+}
+
+```
+
+```{r plot_happy_regions, echo = FALSE, warning=FALSE, message=FALSE}
+
+# plot selected regions (top 10 happiest countries)
+
+for (val in c("Finland", "Denmark", "Switzerland", "Iceland", "Norway"
+            , "Netherlands", "Sweden", "New Zealand", "Austria", "Luxembourg")) {
+  df.temp <- data %>% 
+    filter(Region == val) %>% 
+    group_by(Region) %>%
+    select(Name, Last_Update, Confirmed, Deaths, Recovered
+           , delta_confirmed, delta_deaths, delta_recovered) %>%
+    arrange(Last_Update)
+  
+  p <- plotDelta(df.temp
+            , createLabel(df.temp$Name
+                          , "log10"
+                          , paste0("(", sum(df.temp$delta_confirmed, na.rm = TRUE), " Confirmed Cases)"))
+            , "Y"
+            , "Confirmed")
+  ggsave(filename=paste0("./images/", df.temp$Name, "_confirmed.png"), device="png", plot=p)
+  
+  p <- plotDelta(df.temp
+            , createLabel(df.temp$Name
+                          , "log10"
+                          , paste0("(", sum(df.temp$delta_deaths, na.rm = TRUE), " Deaths)"))
+            , "log10"
+            , "Deaths")
+  ggsave(filename=paste0("./images/", df.temp$Name, "_deaths.png"), device="png", plot=p)
+}
+
+```
+
+### End Notes.
+Minutes before first publishing this report on 03 April 2020, an article entitled [Preparing For the Peak](https://www.13newsnow.com/article/news/health/coronavirus/heres-when-covid-19-could-peak-in-the-dmv/291-4e19c59b-0373-420c-a523-a205a7d60abe) appeared in my email.  What a coincidence.
+
+I've received questions regarding the validity and source of the data used in this report.  The source of the data is from the [COVID-19 Surveillance Dashboard](https://nssac.github.io/covid-19/dashboard/#faq).  They aggregated the data from numerous reliable sources.
+
+**Additional plots.**  Check out plots from one of these other [`r length(unique(gsub("(_confirmed|_deaths)", "", list.files(path = "./images", pattern="\\.png"))))`  areas of interest](https://www.dropbox.com/sh/k4qg9nw5ywfk4gy/AACxAZ_IdmkP-o03OAcd-qwfa?dl=0). [If the link fails to render, right-click on it and open in a new window].
+
+\ 
+\  
+\ 
+
+```
+Every attempt was made to convey valid and accurate results based upon the data provided.
+
+Stay well and be safe.
+
+```
+
+\ 
+\  
+\ 
+
+###### Report generated:  `r Sys.time()`
+
+
+```{r scratchpad, echo = FALSE, warning=FALSE, message=FALSE, eval=FALSE}
+
+#  filter(Name %in% c(Midwest, South, West, Northeast) & case_type == 'Confirmed') %>%
+
+data <- mutate_at(data, vars('Name', 'group'), as.factor)
+
+# Set a number of 'empty bar' to add at the end of each group
+empty_bar <- 4
+to_add <- data.frame( matrix(NA, empty_bar*nlevels(data$group), ncol(data)) )
+colnames(to_add) <- colnames(data)
+to_add$group <- rep(levels(data$group), each=empty_bar)
+data <- rbind(data, to_add)
+data <- data %>% arrange(group)
+data$id <- seq(1, nrow(data))
+ 
+# Get the name and the y position of each label
+label_data <- data
+number_of_bar <- nrow(label_data)
+angle <- 90 - 360 * (label_data$id-0.5) /number_of_bar     # I substract 0.5 because the letter must have the angle of the center of the bars. Not extreme right(1) or extreme left (0)
+label_data$hjust <- ifelse( angle < -90, 1, 0)
+label_data$angle <- ifelse(angle < -90, angle+180, angle)
+ 
+# Make the plot
+p <- ggplot(data, aes(x=as.factor(id), y=value, fill=group)) +       # Note that id is a factor. If x is numeric, there is some space between the first bar
+  geom_bar(stat="identity", alpha=0.5) +
+  ylim(-100,120) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin = unit(rep(-1,4), "cm") 
+  ) +
+  coord_polar() + 
+  geom_text(data=label_data, aes(x=id, y=value+10, label=Name, hjust=hjust), color="black", fontface="bold",alpha=0.6, size=2.5, angle= label_data$angle, inherit.aes = FALSE ) 
+ 
+p
+
+
+# -------------
+
+# Create dataset
+data <- data.frame(
+  individual=paste( "Mister ", seq(1,60), sep=""),
+  group=c( rep('A', 10), rep('B', 30), rep('C', 14), rep('D', 6)) ,
+  value=sample( seq(10,100), 60, replace=T)
+)
+ 
+# Set a number of 'empty bar' to add at the end of each group
+empty_bar <- 4
+to_add <- data.frame( matrix(NA, empty_bar*nlevels(data$group), ncol(data)) )
+colnames(to_add) <- colnames(data)
+to_add$group <- rep(levels(data$group), each=empty_bar)
+data <- rbind(data, to_add)
+data <- data %>% arrange(group)
+data$id <- seq(1, nrow(data))
+ 
+# Get the name and the y position of each label
+label_data <- data
+number_of_bar <- nrow(label_data)
+angle <- 90 - 360 * (label_data$id-0.5) /number_of_bar     # I substract 0.5 because the letter must have the angle of the center of the bars. Not extreme right(1) or extreme left (0)
+label_data$hjust <- ifelse( angle < -90, 1, 0)
+label_data$angle <- ifelse(angle < -90, angle+180, angle)
+ 
+# Make the plot
+p <- ggplot(data, aes(x=as.factor(id), y=value, fill=group)) +       # Note that id is a factor. If x is numeric, there is some space between the first bar
+  geom_bar(stat="identity", alpha=0.5) +
+  ylim(-100,120) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin = unit(rep(-1,4), "cm") 
+  ) +
+  coord_polar() + 
+  geom_text(data=label_data, aes(x=id, y=value+10, label=individual, hjust=hjust), color="black", fontface="bold",alpha=0.6, size=2.5, angle= label_data$angle, inherit.aes = FALSE ) 
+ 
+p
+)
+
+
+myDf <- data %>% filter(Name == "Virginia") %>% arrange(Last_Update) %>% ungroup() %>% select(Confirmed)
+myDf <- DataCombine::slide(myDf, "Confirmed", NewVar = "xLag1", slideBy = -1)
+
+myDF <- data %>%
+            filter(Name %in% c(Northeast)) %>%
+            group_by(Region, Name) %>%
+            arrange(Region, Name, Last_Update) %>%
+            ungroup() %>%
+            select(Name, Last_Update, delta_confirmed) %>%
+            arrange(Name, Last_Update) %>%
+            rename(Date=Last_Update, Change=delta_confirmed)
+
+myDF$row_num <- seq.int(nrow(myDF))  
+
+getAIO_start_idx <- function(df, name) {
+  df %>% filter(Name == name) %>% slice(1) %>% pull(row_num)
+}
+
+getAIO_end_idx <- function(df, name) {
+  df %>% filter(Name == name) %>% slice(n()) %>% pull(row_num)
+}
+
+kable(myDF %>% select(Date, Change)
+      , caption = "Confirmed Cases Trend For Northeast Region") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  pack_rows("Connecticut"
+            , getAIO_start_idx(myDF, "Connecticut")
+            , getAIO_end_idx(myDF, "Connecticut")
+            ) %>%
+  pack_rows("Maine"
+            , getAIO_start_idx(myDF, "Maine")
+            , getAIO_end_idx(myDF, "Maine")
+            ) %>%
+  pack_rows("Massachusetts"
+            , getAIO_start_idx(myDF, "Massachusetts")
+            , getAIO_end_idx(myDF, "Massachusetts")
+            ) %>%
+  pack_rows("New Hampshire"
+            , getAIO_start_idx(myDF, "New Hampshire")
+            , getAIO_end_idx(myDF, "New Hampshire")
+            ) %>%
+  pack_rows("Rhode Island"
+            , getAIO_start_idx(myDF, "Rhode Island")
+            , getAIO_end_idx(myDF, "Rhode Island")
+            ) %>%
+  pack_rows("Vermont"
+            , getAIO_start_idx(myDF, "Vermont")
+            , getAIO_end_idx(myDF, "Vermont")
+            ) %>%
+  pack_rows("New Jersey"
+            , getAIO_start_idx(myDF, "New Jersey")
+            , getAIO_end_idx(myDF, "New Jersey")
+            ) %>%
+  pack_rows("New York"
+            , getAIO_start_idx(myDF, "New York")
+            , getAIO_end_idx(myDF, "New York")
+            ) %>%
+  pack_rows("Pennsylvania"
+            , getAIO_start_idx(myDF, "Pennsylvania")
+            , getAIO_end_idx(myDF, "Pennsylvania")
+            ) %>%
+  pack_rows("Puerto Rico"
+            , getAIO_start_idx(myDF, "Puerto Rico")
+            , getAIO_end_idx(myDF, "Puerto Rico")
+            ) %>%
+  pack_rows("US Virgin Islands"
+            , getAIO_start_idx(myDF, "US Virgin Islands")
+            , getAIO_end_idx(myDF, "US Virgin Islands")
+            ) %>%
+  scroll_box(height = "400px")
+
+
+myDF.1 <- myDF %>% filter(Name %in% c(Midwest))
+myDF.1 <- myDF %>% filter(Name %in% c(South))
+myDF.1 <- myDF %>% filter(Name %in% c(West))
+myDF.1 <- myDF %>% filter(Name %in% c(Northeast))
+
+kable(myDF %>% select(Last_Update, delta_confirmed)
+      , caption = "Trend of Confirmed Cases For US Areas of Interest") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  pack_rows("Alabama"
+            , getAIO_start_idx(myDF, "Alabama")
+            , getAIO_end_idx(myDF, "Alabama")
+            ) %>%
+  pack_rows("Alaska"
+            , getAIO_start_idx(myDF, "Alaska")
+            , getAIO_end_idx(myDF, "Alaska")
+            ) %>%
+  pack_rows("Arizona"
+            , getAIO_start_idx(myDF, "Arizona")
+            , getAIO_end_idx(myDF, "Arizona")
+            ) %>%
+  pack_rows("Arkansas"
+            , getAIO_start_idx(myDF, "Arkansas")
+            , getAIO_end_idx(myDF, "Arkansas")
+            ) %>%
+  pack_rows("California"
+            , getAIO_start_idx(myDF, "California")
+            , getAIO_end_idx(myDF, "California")
+            ) %>%
+  pack_rows("Colorado"
+            , getAIO_start_idx(myDF, "Colorado")
+            , getAIO_end_idx(myDF, "Colorado")
+            ) %>%
+  pack_rows("Connecticut"
+            , getAIO_start_idx(myDF, "Connecticut")
+            , getAIO_end_idx(myDF, "Connecticut")
+            ) %>%
+  pack_rows("Delaware"
+            , getAIO_start_idx(myDF, "Delaware")
+            , getAIO_end_idx(myDF, "Delaware")
+            ) %>%
+  pack_rows("District of Columbia"
+            , getAIO_start_idx(myDF, "District of Columbia")
+            , getAIO_end_idx(myDF, "District of Columbia")
+            ) %>%
+  pack_rows("Florida"
+            , getAIO_start_idx(myDF, "Florida")
+            , getAIO_end_idx(myDF, "Florida")
+            ) %>%
+  pack_rows("Georgia"
+            , getAIO_start_idx(myDF, "Georgia")
+            , getAIO_end_idx(myDF, "Georgia")
+            ) %>%
+  pack_rows("Guam"
+            , getAIO_start_idx(myDF, "Guam")
+            , getAIO_end_idx(myDF, "Guam")
+            ) %>%
+  pack_rows("Hawaii"
+            , getAIO_start_idx(myDF, "Hawaii")
+            , getAIO_end_idx(myDF, "Hawaii")
+            ) %>%
+  pack_rows("Idaho"
+            , getAIO_start_idx(myDF, "Idaho")
+            , getAIO_end_idx(myDF, "Idaho")
+            ) %>%
+  pack_rows("Illinois"
+            , getAIO_start_idx(myDF, "Illinois")
+            , getAIO_end_idx(myDF, "Illinois")
+            ) %>%
+  pack_rows("Indiana"
+            , getAIO_start_idx(myDF, "Indiana")
+            , getAIO_end_idx(myDF, "Indiana")
+            ) %>%
+  pack_rows("Iowa"
+            , getAIO_start_idx(myDF, "Iowa")
+            , getAIO_end_idx(myDF, "Iowa")
+            ) %>%
+  pack_rows("Kansas"
+            , getAIO_start_idx(myDF, "Kansas")
+            , getAIO_end_idx(myDF, "Kansas")
+            ) %>%
+  pack_rows("Kentucky"
+            , getAIO_start_idx(myDF, "Kentucky")
+            , getAIO_end_idx(myDF, "Kentucky")
+            ) %>%
+  pack_rows("Louisiana"
+            , getAIO_start_idx(myDF, "Louisiana")
+            , getAIO_end_idx(myDF, "Louisiana")
+            ) %>%
+  pack_rows("Maine"
+            , getAIO_start_idx(myDF, "Maine")
+            , getAIO_end_idx(myDF, "Maine")
+            ) %>%
+  pack_rows("Maryland"
+            , getAIO_start_idx(myDF, "Maryland")
+            , getAIO_end_idx(myDF, "Maryland")
+            ) %>%
+  pack_rows("Massachusetts"
+            , getAIO_start_idx(myDF, "Massachusetts")
+            , getAIO_end_idx(myDF, "Massachusetts")
+            ) %>%
+  pack_rows("Michigan"
+            , getAIO_start_idx(myDF, "Michigan")
+            , getAIO_end_idx(myDF, "Michigan")
+            ) %>%
+  scroll_box(height = "400px") %>%
+  footnote(general = "TBD")
+
+```
